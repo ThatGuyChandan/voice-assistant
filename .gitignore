@@ -1,0 +1,17 @@
+# Python cache and compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+ENV/
+env/
+.venv/
+
+#vosk-Model
+vosk-model-small-en-us-0.15
+
+#gif
+ego_orb.gif
