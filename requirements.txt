@@ -1,7 +1,13 @@
+requests
+wikipedia
 speechrecognition
 pyttsx3
 pillow
-sentence-transformers
 torch
 transformers
+accelerate
 pyaudio
+# For local LLMs, you can use a model like microsoft/phi-2 or mistralai/Mistral-7B-Instruct-v0.2
+# Example: download with transformers or use huggingface_hub
+vosk
+sounddevice
