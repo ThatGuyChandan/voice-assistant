@@ -15,6 +15,7 @@ import sounddevice as sd
 from vosk import Model, KaldiRecognizer
 import importlib.util
 import glob
+import sys
 try:
     from ego_gui import set_gui_state
 except ImportError:
@@ -27,7 +28,59 @@ except ImportError:
     pyautogui = None
 
 # === Text-to-Speech ===
-engine = pyttsx3.init()
+def init_tts():
+    try:
+        # Try to initialize with a specific driver if needed
+        try:
+            if sys.platform == "win32":
+                engine = pyttsx3.init('sapi5')  # Try sapi5 first (Windows)
+            else:
+                engine = pyttsx3.init()
+        except:
+            engine = pyttsx3.init()  # Fall back to default
+        
+        # Set properties
+        try:
+            voices = engine.getProperty('voices')
+            # Try to find a working voice
+            voice_preferences = [
+                # Try English voices first
+                lambda v: 'en' in v.languages and v.gender == 'male',
+                lambda v: 'en' in v.languages,
+                # Fall back to any voice
+                lambda v: True
+            ]
+            
+            for voice_check in voice_preferences:
+                for voice in voices:
+                    if voice_check(voice):
+                        try:
+                            engine.setProperty('voice', voice.id)
+                            print(f"Using voice: {voice.name}")
+                            return engine
+                        except Exception as e:
+                            print(f"Could not set voice {voice.id}: {e}")
+                            continue
+        except Exception as e:
+            print(f"Error setting up voice: {e}")
+        
+        return engine
+    except Exception as e:
+        print(f"Failed to initialize TTS engine: {e}")
+        return None
+
+engine = init_tts()
+if engine is None:
+    print("Warning: Could not initialize TTS engine. Speech output will be disabled.")
+    # Create a dummy engine that does nothing
+    class DummyEngine:
+        def say(self, *args, **kwargs):
+            print("[TTS Disabled]", *args)
+        def runAndWait(self):
+            pass
+        def setProperty(self, *args, **kwargs):
+            pass
+    engine = DummyEngine()
 
 def speak(text):
     set_gui_state('speaking')
@@ -45,7 +98,7 @@ def has_internet():
         return False
 
 # === LLM Setup ===
-MODEL_NAME = "microsoft/phi-2"  # You can change to another open model if needed
+MODEL_NAME = "gpt2"  # You can change to another open model if needed
 try:
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
@@ -125,80 +178,123 @@ load_skills()
 def perform_action(intent_data, user_text):
     intent = intent_data.get("intent")
     target = intent_data.get("target")
+    
+    # First, check for built-in commands that don't rely on the skill system
     if intent == "open_app" and target:
         set_gui_state('processing')
         os.system(f'start "" "{target}"')
         speak(f"Opening {target}")
         set_gui_state('idle')
+        return
     elif intent == "web_search" and target:
         set_gui_state('processing')
         query = target.replace(' ', '+')
         os.system(f'start https://www.google.com/search?q={query}')
         speak(f"Searching the web for {target}")
         set_gui_state('idle')
+        return
     elif intent == "get_time":
         speak(f"The time is {datetime.now().strftime('%H:%M')}")
-    elif intent == "tell_joke":
-        speak("Why did the computer show up at work late? It had a hard drive!")
-    elif intent == "get_weather":
-        speak("Fetching the weather...")
-        for mod in skill_modules:
-            if hasattr(mod, 'run') and mod.run(intent, target):
-                break
-    elif intent == "get_wikipedia":
-        speak(f"Searching Wikipedia for {target}...")
-        for mod in skill_modules:
-            if hasattr(mod, 'run') and mod.run(intent, target):
-                break
+        return
     elif intent == "screenshot" and pyautogui:
         pyautogui.screenshot('screenshot.png')
         speak("Screenshot saved.")
+        return
     elif intent == "exit":
         speak("Goodbye!")
         set_gui_state('idle')
         os._exit(0)
-    elif intent is not None:
-        # Try all loaded skills
+
+    # If not a built-in command, try to find a skill to handle it
+    if intent:
         for mod in skill_modules:
-            try:
-                if hasattr(mod, 'run') and mod.run(intent, target):
-                    speak(f"Skill '{mod.__name__}' handled the intent '{intent}'.")
+            if hasattr(mod, 'run'):
+                try:
+                    # Pass both intent and target to the skill's run function
+                    result = mod.run(intent, target)
+                    if result:
+                        # If the skill returns a string, speak it
+                        if isinstance(result, str):
+                            speak(result)
+                        # Otherwise, give a generic confirmation
+                        else:
+                            speak(f"Okay, I've handled that.")
+                        return # Exit after the first successful skill
+                except Exception as e:
+                    print(f"Error in skill {mod.__name__}: {e}")
+                    speak(f"I encountered an error trying to use the {mod.__name__} skill.")
                     return
-            except Exception as e:
-                print(f"Error in skill {mod.__name__}: {e}")
-        speak(f"Intent '{intent}' with target '{target}' is not implemented yet.")
+
+    # If no skill was found or the intent was None
+    if intent:
+        speak(f"I don't know how to handle the intent '{intent}'.")
     else:
-        # Learning mechanism
+        # Fallback to the learning mechanism if intent is None
         speak("I didn't understand that. Would you like to teach me what to do?")
-        answer = recognize_speech_auto().lower()
-        if "yes" in answer:
-            speak("Please describe the action I should perform when you say this command.")
-            action = recognize_speech_auto()
-            learned_commands[user_text] = {"intent": "custom", "target": action}
-            save_learned_commands(learned_commands)
-            speak("Learned new command!")
-        else:
-            speak("Okay, let me know if you want to teach me next time.")
+        try:
+            answer = recognize_speech_auto().lower()
+            if "yes" in answer:
+                speak("Please describe the action I should perform when you say this command.")
+                action_description = recognize_speech_auto()
+                # For simplicity, we'll create a custom intent and save it
+                # A more robust system would ask for a specific JSON structure
+                new_intent = f"custom_{user_text.lower().replace(' ', '_')}"
+                learned_commands[user_text] = {"intent": new_intent, "target": action_description}
+                save_learned_commands(learned_commands)
+                speak("I've learned a new command!")
+            else:
+                speak("Okay, let me know if you change your mind.")
+        except Exception as e:
+            print(f"Error during learning process: {e}")
+            speak("Sorry, something went wrong while I was trying to learn.")
 
 # === Speech Recognition ===
 recognizer = sr.Recognizer()
 
 def recognize_speech():
     set_gui_state('listening')
-    with sr.Microphone() as source:
+    # Find a working microphone
+    mic_index = None
+    try:
+        mic_list = sr.Microphone.list_microphone_names()
+        if mic_list:
+            # Heuristic: prefer non-default devices if available, otherwise use default
+            # This can help on systems with virtual audio cables.
+            for i, name in enumerate(mic_list):
+                # A simple heuristic to find a real microphone
+                if 'microphone' in name.lower() or 'headset' in name.lower():
+                    mic_index = i
+                    print(f"Using microphone: {name}")
+                    break
+            if mic_index is None:
+                mic_index = 0 # Fallback to the first one
+    except Exception as e:
+        print(f"Could not list microphones: {e}")
+        set_gui_state('idle')
+        return ""
+
+    with sr.Microphone(device_index=mic_index) as source:
         print("🎤 Listening for command...")
-        audio = recognizer.listen(source, timeout=5)
         try:
+            recognizer.adjust_for_ambient_noise(source)
+            audio = recognizer.listen(source, timeout=5, phrase_time_limit=5)
             text = recognizer.recognize_google(audio)
-        except:
+        except sr.UnknownValueError:
+            print("Google Speech Recognition could not understand audio")
+            text = ""
+        except sr.RequestError as e:
+            print(f"Could not request results from Google Speech Recognition service; {e}")
+            text = ""
+        except Exception as e:
+            print(f"An error occurred during speech recognition: {e}")
             text = ""
     set_gui_state('idle')
     return text
 
-def recognize_speech_vosk(model_path="model"):  # model_path should point to a Vosk model directory
-    """Listen to the microphone and print recognized text using Vosk."""
+def recognize_speech_vosk(model_path="model"):
+    """Listen to the microphone and return recognized text using Vosk."""
     q = queue.Queue()
-    
+
     def callback(indata, frames, time, status):
         if status:
             print(status, flush=True)
@@ -206,36 +302,65 @@ def recognize_speech_vosk(model_path="model"):  # model_path should point to a V
 
     try:
         model = Model(model_path)
+        recognizer = KaldiRecognizer(model, 16000)
     except Exception as e:
         print(f"Could not load Vosk model from {model_path}: {e}")
-        return
+        return ""
 
-    recognizer = KaldiRecognizer(model, 16000)
-    print("Listening... (press Ctrl+C to stop)")
-    with sd.RawInputStream(samplerate=16000, blocksize = 8000, dtype='int16', channels=1, callback=callback):
-        while True:
-            data = q.get()
-            if recognizer.AcceptWaveform(data):
-                result = recognizer.Result()
-                text = json.loads(result).get('text', '')
-                if text:
-                    print(f"Recognized: {text}")
-            else:
-                # Partial result can be used for real-time feedback
-                pass
+    device_index = None
+    try:
+        devices = sd.query_devices()
+        input_devices = [d for d in devices if d['max_input_channels'] > 0]
+        if not input_devices:
+            raise ValueError("No input audio devices found.")
+        # Heuristic to find a real microphone
+        for i, d in enumerate(input_devices):
+            if 'microphone' in d['name'].lower() or 'headset' in d['name'].lower():
+                device_index = d['index']
+                print(f"Using device: {d['name']}")
+                break
+        if device_index is None:
+            device_index = input_devices[0]['index'] # Fallback to the first one
+    except Exception as e:
+        print(f"Could not find a suitable audio device for Vosk: {e}")
+        return ""
 
-# Example usage:
-# recognize_speech_vosk("model")
-# Download a Vosk model (e.g., from https://alphacephei.com/vosk/models) and extract to a 'model' folder.
+    set_gui_state('listening')
+    print("🎤 Listening for command (Vosk)...")
+
+    try:
+        with sd.RawInputStream(samplerate=16000, blocksize=8000, dtype='int16',
+                               channels=1, callback=callback, device=device_index):
+            # Listen for a phrase. This is tricky without a proper VAD.
+            # We'll listen for a few seconds and see if we get a result.
+            start_time = datetime.now()
+            while (datetime.now() - start_time).total_seconds() < 7: # 7 second timeout
+                data = q.get()
+                if recognizer.AcceptWaveform(data):
+                    result = recognizer.Result()
+                    text = json.loads(result).get('text', '')
+                    if text:
+                        set_gui_state('idle')
+                        return text
+            # If no full result, get partial result
+            result = recognizer.FinalResult()
+            text = json.loads(result).get('text', '')
+            set_gui_state('idle')
+            return text
+
+    except Exception as e:
+        print(f"Vosk recognition failed: {e}")
+        set_gui_state('idle')
+        return ""
 
 def recognize_speech_auto():
     """Try Vosk first, fallback to Google if not available."""
     model_path = "model"
     if os.path.exists(model_path):
-        try:
-            return recognize_speech_vosk(model_path)
-        except Exception as e:
-            print(f"Vosk failed: {e}")
+        text = recognize_speech_vosk(model_path)
+        if text:
+            return text
+    # Fallback to Google Speech Recognition
     return recognize_speech()
 
 # === Wake Word Detection Loop ===

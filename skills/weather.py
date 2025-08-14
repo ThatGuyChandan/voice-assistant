@@ -6,8 +6,7 @@ def run(intent, target):
         try:
             url = f"https://wttr.in/{city}?format=3"
             response = requests.get(url)
-            print(response.text)
+            return response.text
         except Exception as e:
-            print(f"Could not fetch weather: {e}")
-        return True
-    return False 
+            return f"Could not fetch weather: {e}"
+    return None 
