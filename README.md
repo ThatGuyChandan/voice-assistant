@@ -23,7 +23,7 @@ graph TD
     C --> D{Listen for 'EGO' via Vosk STT};
     D -- Wake Word Detected --> E[Speak 'Yes?' & Set State to Listening];
     E --> F[Listen for Full Command];
-    F --> G[Transcribe Command (Vosk / Google STT)];
+    F --> G[Transcribe Command \(Vosk / Google STT\)];
     G --> H[Extract Intent (Keywords / LLM)];
     H -- Set State to Processing --> I{Perform Action};
     I -- Built-in Command --> J[Execute System Action e.g., open app];
